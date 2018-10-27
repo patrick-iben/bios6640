@@ -1,0 +1,473 @@
+---
+title: 'BIOS 6640 R Project'
+author: "Patrick Iben"
+date: "October 26, 2018"
+output:
+  html_document: default
+  fig_caption: yes
+  number_sections: yes
+  pdf_document: default
+  word_document: default
+---
+
+###Background
+
+####Malaria is one of the worst diseases the world has endured, a leading cause of death in many developing nations [1]. 3.2 billion people live at risk of infection; an estimated 445,000 people - primarily childen from tropical/sub-tropical developing nations- died of Malaria in 2016 [1]. In Africa alone, annual costs of malaria are 12 billion dollars [2]. 
+
+####Historically, malaria indicence depends heavily on temperature, humidity, and rainfall [3]. Areas that experience high temperatures all year also experience year-. The disease is spread from female Anopheles mosquitoes infected with a host of parasites; in Mozambique, these parasites are: P. falciparum >90%: P. malariae; P. ovale; and P. vivax. [4]. 
+
+
+###Description
+
+####The purpose of this anlysis is to describe the temporal and spatial variation in weather and malaria incidence data from Mozambique. The variables in the data are:
+
+#####rain - the weekly ave rainfall in mm
+#####rainTot - the weekly total rainfall in mm
+#####tavg - the weekly average temperature in Celcius
+#####rh(%) - the relative humidity in %
+#####sd(mmHg) - the saturation vapor pressure deficit in mm of mercury (another measure of humidity)
+#####psfc(hPa) - the surface barometric pressure (a general indicator of large-scale weather activity and exhibits a strong seasonal cycle)
+#####Population UN - the total population of the district
+#####u5weight - the proportion of the total population under 5 years of age
+#####malaria - the number of cases under 5 reported that week (this is simulated)
+#####DISTCODE - the unique identifier for a district, which can be linked to the shape file
+#####tabove[] the number of days that week that temperature was above a threshold (the number next to tabove)
+#####pabove[] the number of days that week that rainfall was above a threshold (the number next to pabove)
+
+####51,705 weekly district records were provided, spanning from 2010 to 2017. The primary outcome is weekly total malaria cases per thousand, under 5 years of age. This was derived from the proportion of cases under 5 reported that week, out of the total population under 5 years (per district).
+
+####As the parasites first grow and multiply in the liver before entering the bloodstream, a lag is expected to exist between weather factors and malaria  symptoms [3]. Weekly lags (up to 28) of covariates and their association with malaria cases per thousand under 5 were investigated to determine optimal lags.
+
+```{r, echo=F, message=F, warning=F}
+op <- par()
+options(width=80)
+emptyenv()
+rm(list=ls())
+####Importing data, loading packages
+#install.packages("tidyverse", dependencies = T)
+#install.packages(c("knitr", "dplyr"))
+#install.packages(c("RColorBrewer", "sp", "maptools", "lattice", "latticeExtra", "rgdal", "tidyquant"))
+library(RColorBrewer)
+library(sp)
+library(maptools) 
+library(lattice)
+library(latticeExtra) # For layer()
+library(rgdal)
+library(tidyverse)
+library(knitr)
+library(dplyr)
+require(gridExtra)
+library(tidyquant)
+
+mal <- read.csv("C:/Users/Patrick/Documents/BIOS6640/MozSyntheticMalaria.csv")
+#Calculating primary outcome: malaria incidence in cases/1000 for children under 5
+mal$cases.u5 <- (mal$malaria / (mal$Population_UN*mal$u5weight))*1000
+#Making a table for overall descriptives by year
+tab1 <- mal %>% 
+  group_by(Epiyear) %>% 
+  summarise(
+  mean_cu5 = round(mean(cases.u5, na.rm = TRUE),2),
+  rainTot = round(median(rainTot, na.rm = TRUE),2),
+  mean_tavg = round(mean(tavg, na.rm = TRUE),2),
+  mean_rh = round(mean(rh, na.rm = TRUE),2),
+  mean_sd = round(mean(sd, na.rm = TRUE),2),
+  mean_psfc = round(mean(psfc, na.rm = TRUE),2),
+  n=n()
+) 
+colnames(tab1) <- c("Year", "Mean Cases/1000 U5", "Median Weekly Rainfall", "Average Temp (C)", "Mean Relative Humidity (%)", "Mean Saturation Vapor Pressure Deficit (mmHg)","Mean Surface Barometric Pressure (hPa)", "Total N")
+```
+
+```{r, echo=T, message=F, warning=F}
+kable(tab1)
+```
+
+####2017 data is clearly incomplete (1224 cases, compared to 7092 for 2016). 2017 was excluded from the analysis, for proper comparison by year. To avoid multicollinearity issues with tavg and rainTot, all derived tabove[] and pabove[] variables were discounted from analysis.
+
+```{r, echo=F, message=F, warning=F}
+mal_no2017 <- mal[which(mal$Epiyear < 2017),]
+```
+
+```{r, echo=F, message=F, warning=F}
+tab2 <- mal_no2017 %>% 
+  group_by(Region) %>% 
+  summarise(
+  mean_cu5 = round(mean(cases.u5, na.rm = TRUE),2),
+  sd_cu5 = round(sd(cases.u5, na.rm = TRUE),2),
+  rainTot = round(sum(rainTot, na.rm = TRUE),2),
+  mean_tavg = round(mean(tavg, na.rm = TRUE),2),
+  mean_rh = round(mean(rh, na.rm = TRUE),2),
+  mean_sd = round(mean(sd, na.rm = TRUE),2),
+  mean_psfc = round(mean(psfc, na.rm = TRUE),2),
+  n=n()
+) 
+colnames(tab2) <- c("Region", "Mean Weekly Cases/1000 U5","SD Cases/1000 U5" ,"Total Rainfall (mm)", "Average Temp (C)", "Mean Relative Humidity (%)", "Mean Saturation Vapor Pressure Deficit (mmHg)","Mean Surface Barometric Pressure (hPa)", "Total N")
+
+```
+
+###Examining incidence by region
+```{r, echo=T, message=F, warning=F}
+kable(tab2)
+```
+
+```{r, echo=F, message=F, warning=F}
+tab3 <- mal_no2017 %>% 
+  group_by(Region) %>% 
+  summarise(
+  tot_cases = round(sum(malaria, na.rm = TRUE),2),
+  rainTot = round(sum(rainTot, na.rm = TRUE),2),
+  mean_tavg = round(mean(tavg, na.rm = TRUE),2),
+  mean_rh = round(mean(rh, na.rm = TRUE),2),
+  mean_sd = round(mean(sd, na.rm = TRUE),2),
+  mean_psfc = round(mean(psfc, na.rm = TRUE),2),
+  n=n()
+) 
+colnames(tab3) <- c("Region", "Total Cases Under 5","Median Weekly Rainfall (mm)", "Average Temp (C)", "Mean Relative Humidity (%)", "Mean Saturation Vapor Pressure Deficit (mmHg)","Mean Surface Barometric Pressure (hPa)", "Total N")
+
+```
+
+```{r, echo=T, message=F, warning=F}
+kable(tab3)
+```
+
+####In terms of weekly malaria cases per thousand (under 5): the Northern region has the highest incidence of malaria (mean = 15.57, SD = 8.81), followed by the Coastal Region (mean = 12.06, SD = 6.63). These findings are to be expected, as malaria incidence is (historically) negatively related to altitude, and positively related to adjacency to water and humidity (https://www.cdc.gov/malaria/). Rainfall and temperature were highest in the coastal region (total rainfall: 112,179.28 mm; average temperature: 24.1 C). Rainfall was lowest in the southern region (total rainfall: 32,118.38 mm; average temperature: 23.27 C). The northern (total rainfall: 87,831.96 mm; average temperature: 22.76 C) and center regions (total rainfall: 96,737.14 mm; average temperature: 22.48 C) had roughly equal levels of rainfall and average temperatures.
+
+####In terms of raw total infection numbers, the most malaria cases (under 5) have occured in the coastal region (N = 4,954,142), followed closely by the northern region (N = 4,889,935) and the center region (N = 4,656,018). As the coastal region is low-altitude, humid, and adjacent to the ocean, and the northen region is adjacent to a river, these findings are unsurprising. The southern region, further from water and with the lowest mean weekly relative humidity (67.40%), had far lower incidence rates (mean = 5.87, SD = 5.8) and fewer incidences (N = 442,413) than the rest of the country.
+
+```{r, echo=F, message=F, warning=F}
+#Importing shape file 
+poly1 <- readShapePoly("C:/Users/Patrick/Documents/BIOS6640/Moz_admin2.shp", IDvar="DISTCODE")
+
+#Getting potential primary explanatory variable summary statistics for merging with shape file
+cpt <- as.data.frame(tapply(mal_no2017$cases.u5, list(mal_no2017$DISTCODE, mal_no2017$Epiyear), mean))
+colnames(cpt) <- c("cpt10", "cpt11", "cpt12", "cpt13", "cpt14", "cpt15", "cpt16")
+rainTot <- as.data.frame(tapply(mal_no2017$rainTot, list(mal_no2017$DISTCODE, mal_no2017$Epiyear), sum))
+colnames(rainTot) <- c("rain10", "rain11", "rain12", "rain13", "rain14", "rain15", "rain16")
+tavg <- as.data.frame(tapply(mal_no2017$tavg, list(mal_no2017$DISTCODE, mal_no2017$Epiyear), mean))
+colnames(tavg) <- c("t10", "t11", "t12", "t13", "t14", "t15", "t16")
+rh <- as.data.frame(tapply(mal_no2017$tavg, list(mal_no2017$DISTCODE, mal_no2017$Epiyear), mean))
+colnames(rh) <- c("rh10", "rh11", "rh12", "rh13", "rh14", "rh15", "rh16")
+sd <- as.data.frame(tapply(mal_no2017$sd, list(mal_no2017$DISTCODE, mal_no2017$Epiyear), mean))
+colnames(sd) <- c("sd10", "sd11", "sd12", "sd13", "sd14", "sd15", "sd16")
+psfc <- as.data.frame(tapply(mal_no2017$psfc, list(mal_no2017$DISTCODE, mal_no2017$Epiyear), mean))
+colnames(psfc) <- c("psfc10", "psfc11", "psfc12", "psfc13", "psfc14", "psfc15", "psfc16")
+
+#Aggregating summary stats into dataframe
+allStats <- as.data.frame(cbind(cpt, rainTot, tavg, rh, sd, psfc))
+#Combining with spatial data
+polydat <- SpatialPolygonsDataFrame(poly1, allStats)
+
+#Color palettes (color-blind friendly)
+tempPal <- brewer.pal(n = 7, name = "YlOrRd")
+rainPal <- brewer.pal(n = 7, name = "YlGnBu")
+rhPal <- brewer.pal(n = 7, name = "BuPu")
+sdPal <- brewer.pal(n = 7, name = "Greens")
+psfcPal <- brewer.pal(n=7, name = "Greys")
+```
+
+###Mapping annual relationship distribution, by Region
+```{r, echo=T, message=F, warning=F}
+#Mean cases per thousand (Under 5 years of age), by year
+sp_out_cpt <-spplot(polydat, c("cpt10", "cpt11", "cpt12", "cpt13", "cpt14", "cpt15", "cpt16"), 
+       names.attr = c("2010", "2011", "2012", "2013", "2014", "2015", "2016"), 
+       colorkey=list(space="right"), scales = list(draw = TRUE), 
+       main = "Mean cases per thousand (Under 5 years of age), by Year", as.table = TRUE, 
+       col.regions = tempPal, col = "transparent", cuts = 5)
+sp_out_cpt
+```
+
+#####From the plot above, it appears as if mean incidence rates increase yearly. Rates in the Southern Region remain consistently lower than the surrounding regions, across years. There may be a linear relationship between mean incidence and year. Mean incidence change over time appears to have a district-specific effect. Lastly, cases appear to be clustered along the river in the northern region and along the coast, in particular.
+
+```{r, echo=F, message=F, warning=F}
+sp_out_totrain <-spplot(polydat, c("rain10","rain11", "rain12", "rain13", "rain14", "rain15", "rain16"), 
+       names.attr = c("2010", "2011", "2012", "2013", "2014", "2015", "2016"), 
+       colorkey=list(space="right"), scales = list(draw = TRUE), 
+       main = "Total rainfall by year", as.table = TRUE, 
+       col.regions = rainPal, col = "transparent", cuts = 5)
+
+sp_out_tavg <-spplot(polydat, c("t10", "t11", "t12", "t13", "t14", "t15", "t16"), 
+       names.attr = c("2010", "2011", "2012", "2013", "2014", "2015", "2016"), 
+       colorkey=list(space="right"), scales = list(draw = TRUE), 
+       main = "Mean temperature by year", as.table = TRUE, 
+       col.regions = tempPal, col = "transparent", cuts = 5)
+
+sp_out_rh <-spplot(polydat, c("rh10", "rh11", "rh12", "rh13", "rh14", "rh15", "rh16"), 
+       names.attr = c("2010", "2011", "2012", "2013", "2014", "2015", "2016"), 
+       colorkey=list(space="right"), scales = list(draw = TRUE), 
+       main = "Mean Relative Humidity by year", as.table = TRUE, 
+       col.regions = rhPal, col = "transparent", cuts = 5)
+
+sp_out_sd <-spplot(polydat, c("sd10", "sd11", "sd12", "sd13", "sd14", "sd15", "sd16"), 
+       names.attr = c("2010", "2011", "2012", "2013", "2014", "2015", "2016"), 
+       colorkey=list(space="right"), scales = list(draw = TRUE), 
+       main = "Mean Saturation Vapor Pressure Deficit by year", as.table = TRUE, 
+       col.regions = rhPal, col = "transparent", cuts = 5)
+
+sp_out_psfc <-spplot(polydat, c("psfc10", "psfc11", "psfc12", "psfc13", "psfc14", "psfc15", "psfc16"), 
+       names.attr = c("2010", "2011", "2012", "2013", "2014", "2015", "2016"), 
+       colorkey=list(space="right"), scales = list(draw = TRUE), 
+       main = "Mean Surface Barometric Pressure by year", as.table = TRUE, 
+       col.regions = rhPal, col = "transparent", cuts = 5)
+```
+
+```{r, echo=T, message=F, warning=F}
+sp_out_tavg
+```
+
+```{r, echo=T, message=F, warning=F}
+#grid.arrange(sp_out_cpt, sp_out_rh, ncol = 2)#Similar steady increases over time, district-level variability
+#grid.arrange(sp_out_cpt, sp_out_sd, ncol = 2)#Similar steady increases over time, district-level variability
+#grid.arrange(sp_out_cpt, sp_out_psfc, ncol = 2)#Similar steady increases over time, district-level variability
+```
+
+####The clustering of incidence is somewhat mirrored by the clustering of temperature differences, indicating a potential relationship between average weekly temperature and weekly malaria cases per thousand (under 5).
+
+```{r, echo=T, message=F, warning=F}
+sp_out_totrain
+```
+
+####This overlap in clustering can be clearly seen, though to a lesser extent, with patterns in total weekly rainfall above. Areas with consisently lower rainfall tend to also be areas with consistently lower incidence of malaria. 
+
+```{r, echo=T, message=F, warning=F}
+ggplot(mal_no2017, aes(x=as.factor(Epiyear), y=cases.u5, fill=Region)) + ylim(0,50) +
+    geom_boxplot() + 
+  labs(x = "Year", y = "Age <5 malaria cases per 1,000", color = "Region") 
+```
+
+####There appears to be an overall increasing trend in malaria cases (per thousand, under 5). The notable exception is the southern region, which is consistently lower than the other three, and with a less-pronounced annual increase. These findings indicate that there may exist an interaction between region and year.
+
+###Mapping incidence by Epiweek
+
+```{r, echo=T, message=F, warning=F}
+ggplot(data = mal_no2017) +
+  geom_smooth(mapping = aes(x = Epiweek, y = cases.u5, color = Region)) +
+  labs(x = "Epiweek", 
+       y = "Cases per 1,000", color = "Region")+ expand_limits(y=c(0,40))
+```
+
+####A seasonal effect of infection rate is likely, as there appears to be an approximately cubic relationship between Epiweek and cases per thousand (under 5). The temporal relationship over the year, on a weekly scale, does not appear to differ by region.
+
+###Covariate rates over time (by Epiweek)
+```{r, echo=T, message=F, warning=F}
+rainplot <- ggplot(data = mal_no2017) +
+  geom_smooth(mapping = aes(x = rainTot, y = cases.u5)) +
+  labs(x = "Total Weekly Rainfall (mm)", 
+       y = "Cases per 1,000", color = "Region")+ expand_limits(y=c(0,40))
+tplot <- ggplot(data = mal_no2017) +
+  geom_smooth(mapping = aes(x = tavg, y = cases.u5)) +
+  labs(x = "Mean Weekly Temperature (C)", 
+       y = "Cases per 1,000", color = "Region")+ expand_limits(y=c(0,40))
+rhplot <- ggplot(data = mal_no2017) +
+  geom_smooth(mapping = aes(x = rh, y = cases.u5)) +
+  labs(x = "Mean Weekly Relative Humidity (%)", 
+       y = "Cases per 1,000", color = "Region")+ expand_limits(y=c(0,40))
+sdplot <- ggplot(data = mal_no2017) +
+  geom_smooth(mapping = aes(x = sd, y = cases.u5)) +
+  labs(x = "Mean Weekly Sauturation Defecit (mmHg)", 
+       y = "Cases per 1,000", color = "Region")+ expand_limits(y=c(0,40))
+psfcplot <- ggplot(data = mal_no2017) +
+  geom_smooth(mapping = aes(x = psfc, y = cases.u5)) +
+  labs(x = "Mean Weekly Barometric Pressure (hPa)", 
+       y = "Cases per 1,000", color = "Region")+ expand_limits(y=c(0,40))
+
+grid.arrange(rainplot, tplot, rhplot, sdplot, psfcplot, ncol = 5)
+
+```
+####The smoothed plots of the univariate associations between potential covariates, pictured above, all indicate potential non-linear relationships with respect to cases per thousand (under 5).
+
+```{r, echo=F, message=F, warning=F}
+#Introducing lag sequences for covariates (up to 28 weeks), as a lag exists historically (and logically) between environmental factors and infection
+lags <- seq(28)
+lag_names <- paste("lag", formatC(lags, width = nchar(max(lags)), flag = "0"), 
+  sep = "_")
+lag_functions <- setNames(paste("dplyr::lag(., ", lags, ")"), lag_names)
+
+#Appending data with lags
+library(dplyr) 
+sel <- select(mal_no2017, c(rainTot, rh, tavg, sd, psfc))
+sel <-  mal_no2017 %>% mutate_at(vars(rainTot, rh, tavg, sd, psfc), funs_(lag_functions))
+```
+
+###Visualizing outcome with transformations, to determine if necessary.
+
+```{r, echo=T, message=F, warning=F}
+par(mfrow = c(1,3))
+hist(sel$cases.u5, breaks = 20, col = "green", xlab = "Cases Per Thousand (Under 5)", main = NULL)#~Normal, but right skewed
+hist(log(sel$cases.u5), breaks = 20, col = "green", xlab = "Log-e Cases Per Thousand (Under 5)", main = NULL)#log base e transformed (better)
+hist(log(sel$cases.u5,10), breaks = 20, col = "green", xlab = "Log-10 Cases Per Thousand (Under 5)", main = NULL)#log base 10 transformed (even better than base e transformation).
+```
+
+####The log-10 transformation best remedied the right skew in the distribution of cases per thousand (under 5), and was used as the (normally-distributed) outcome.
+
+```{r, echo=F, message=F, warning=F}
+#adding log(10) count of cpt u5
+sel$log10cpt.u5 <- log(sel$cases.u5,10)
+#summary(mal_no2017$log10cpt.u5)#checking for inf/-inf values. none, not concerned
+```
+
+###Distribution of potential explanatory variables.
+
+```{r, echo=T, message=F, warning=F}
+par(mfrow = c(1,5))
+hist(sel$rainTot, breaks = 20, col = "blue", xlab = "rainTot (mm)", main = NULL)#heavy right skew
+hist(sel$tavg, breaks = 20, col = "red", xlab = "tavg (C)", main = NULL)
+hist(sel$rh, breaks = 20, col = "purple", xlab = "rh (%)", main = NULL)
+hist(sel$sd, breaks = 20, col = "yellow", xlab = "sd (mmHg)", main= NULL)
+hist(sel$psfc, breaks = 20, col = "orange", xlab = "psfc (hPa)", main = NULL)
+```
+
+####All potential covariates (other than total weekly rainfall - heavy right skew) are approximately-normally distributed.
+
+###Correlations
+
+```{r, echo=F, message=F, warning=F}
+#install.packages("PerformanceAnalytics")
+library(PerformanceAnalytics)
+sel_num = sel[,c(2:4,13:16,168)]
+```
+
+```{r, echo=T, message=F, warning=F}
+chart.Correlation(sel_num, histogram=TRUE, pch=19)
+```
+
+####Total weekly rainfall (rainTot), average weekly temperature (tavg), relative humidity (rh), saturation vapor pressure deficit (sd), and surface barometric pressure (psfc) are all significantly, but weakly (linearly) correlated with cases per 1000 under 5 (log-10). Due to historical significance of these factors, as well as logical seasonality, this weakness may be due to nonlinear trends. Nonlinear trends will be investigated via spline-fitting. Additionally, rh and sd are highly-negatively correlated (r= -0.92, p < 0.0001); as both are measures of humidity, this was to be expected. To avoid multicollinearity, only one measure was selected for final modeling, based on model fit statistics.
+
+```{r, echo=F, message=F, warning=F}
+#install.packages("corrr")
+#mapping correlation between lags and outcome
+#Subsetting lags and outcome
+lags <- sel[,c(28:168)]
+library(corrr)
+lagcorrs = lags %>% correlate() %>% focus(log10cpt.u5)
+#Getting absolute value of correlation
+lagcorrs$absolutecorrelation = abs(lagcorrs$log10cpt.u5)
+#Extracting var name and lag# into separate columns
+lagcorrs$lag = as.numeric(substr(lagcorrs$rowname, nchar(lagcorrs$rowname)-1,nchar(lagcorrs$rowname)))
+lagcorrs$var = substr(lagcorrs$rowname, 1,nchar(lagcorrs$rowname)-7)
+
+lagcorrs.2 <- lagcorrs %>%
+  group_by(var) %>%
+  mutate(color = (min(absolutecorrelation) == absolutecorrelation | max(absolutecorrelation) == absolutecorrelation))
+```
+
+Correlation between weather covariates and incidence may also be diminished here due to a temporal lag between environmental factors and presence of malaria symptoms. Thus, lag for each covariate (up to 28 weeks) was investigated.
+
+```{r, echo=T, message=F, warning=F}
+ggplot(data=lagcorrs.2, aes(x = lag, y = absolutecorrelation)) +
+  geom_line() +
+  geom_point(aes(color = color)) +
+  facet_wrap(~var, ncol=1, scales="free_y") +
+  scale_color_manual(values = c(NA, "red")) + 
+  scale_x_continuous(breaks=seq(0, 28, 1))+
+  theme(legend.position="none")+
+  labs(title="Searching for Optimal Weather Covariate Lags (Extrema in Red)", x="Lag (in Weeks)", y="Absolute Correlation with log-10 Cases per Thousand (Under 5)", colour = "", fill="")
+```
+
+####According to the plots above, linear (Pearson) correlation between log-10 cases under 5 and psfc is optimized with a lag of 11 weeks. Linear correlation between log-10 cases under 5 and rainTot, rh, and sd are optimized with a lag of 4 weeks. Linear correlation between log-10 cases under 5 and tavg is optimized with a lag of 15 weeks. Autocorrelation diagnostic plots were then assesed to further determine optimal lagging of covariates. 
+
+```{r, echo=T, message=F, warning=F}
+#Examining autocorrelation
+acf(sel$rainTot, lag.max = 28, xlab = "Total Weekly Rainfall Lag")#min at 12 weeks
+acf(sel$tavg, lag.max = 28, xlab = "Weekly Avg. Temp. Lag")#min at 16 weeks
+acf(sel$psfc, lag.max = 28, xlab = "Weekly Avg. Barom. Press. Lag")#never truly diminishes in study
+acf(sel$rh, lag.max = 28, xlab = "Weekly Avg. Rel. Humidity Lag")#min at 15 weeks
+acf(sel$sd, lag.max = 28, xlab = "Weekly Avg. Saturation Defecit Lag")#min at 14 weeks
+```
+
+####The results from the autocorrelation plots above indicate a potential (approximately) 4-week pattern for all variables besides psfc. The results for psfc indicate that a lag may not be helpful in model selection.
+
+```{r, echo=F, message=F, warning=F}
+#Generalized Additive Modeling ("gam" package)
+library(gam)
+#norm_gam_simple = gam(log10cpt.u5 ~ s(Epiweek), family = gaussian, data = sel)
+#summary(norm_gam_simple)#AIC: 28216.37, Residual Deviance: 5167.725
+
+#norm_gam_full = gam(log10cpt.u5 ~ s(Epiweek) + Epiyear * as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_15) + s(psfc_lag_11) + s(sd_lag_04), family = gaussian, data = sel)
+#summary(norm_gam_full)#AIC: 8482.707  , Residual Deviance: 3491.603  
+
+#norm_gam_full = gam(log10cpt.u5 ~ s(Epiweek) + Epiyear * as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_04) + s(psfc_lag_11) +  s(rh_lag_04), family = gaussian, data = sel)
+#summary(norm_gam_full)#AIC: 6000.358, Residual Deviance: 3324.244  
+
+#norm_gam_full = gam(log10cpt.u5 ~ s(Epiweek) + Epiyear * as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_04) + s(psfc_lag_11) +  s(sd_lag_04), family = gaussian, data = sel)
+#summary(norm_gam_full)#AIC: 5827.005, Residual Deviance: 3312.846  
+
+#norm_gam_full = gam(log10cpt.u5 ~ s(Epiweek) + Epiyear * as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_15) + s(psfc) + s(sd_lag_04), family = gaussian, data = sel)
+#summary(norm_gam_full)#AIC: 8365.117 , Residual Deviance: 3483.477 
+
+#norm_gam_full = gam(log10cpt.u5 ~ s(Epiweek) + Epiyear * as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_15) + s(psfc) + s(rh_lag_04), family = gaussian, data = sel)
+#summary(norm_gam_full)#AIC: 8187.937 , Residual Deviance: 3471.268 
+
+#norm_gam_full = gam(log10cpt.u5 ~ s(Epiweek) + Epiyear * as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_04) + s(psfc) +  s(sd_lag_04), family = gaussian, data = sel)
+#summary(norm_gam_full)#AIC: 5645.402  , Residual Deviance: 3301.354 (Best fit model, better fit than with lag 11)
+
+#norm_gam_full = gam(log10cpt.u5 ~ s(Epiweek) + Epiyear * as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_04) + s(psfc) +  s(rh_lag_04), family = gaussian, data = sel)
+#summary(norm_gam_full)#AIC: 5830.833  , Residual Deviance: 3313.504  (Better off with sd)
+
+#norm_gam_nolag = gam(log10cpt.u5 ~ s(Epiweek) + Epiyear *as.factor(Region) + s(rainTot) + s(tavg) + s(psfc) +  s(sd), family = gaussian, data = sel)
+#summary(norm_gam_nolag)#AIC: 7460.079  , Residual Deviance: 3422.43  (Better off with model above)
+```
+
+####Using the gam() function in the "gam" package in R, models were fit using smoothing term combinations of the following covariates: psfc/psfc_lag_11, rainTot_lag_04, rh_lag_04/sd_lag_04, and tavg_lag_15. Other models were fit using combinations of psfc/psfc_lag_11, rainTot_lag_04, rh_lag_04/sd_lag_04, and tavg_lag_04. A smoothing term for Epiweek was included in all model combinations, as well as fixed effects for Epiyear, Region, and their interaction terms. The optimal model was selected on minimial model residual deviance [5]. 
+
+####To account for district-specific variability in malaria incidence rates, using the gam() function in the "mgcv" package in R, an additional random coefficient for district was furthered considered, under an independent and identically-distributed Gaussian assumption [6,7].
+
+```{r, echo=T, message=F, warning=F}
+#install.packages("mgcv")
+library(mgcv)
+detach(package:gam)#Must detach other gam() modeling package
+library(dplyr)
+sel_comp = sel %>% na.omit#Subsetting complete cases (mgcv GAM requirement)
+norm_gamm = gam(log10cpt.u5 ~ s(Epiweek) + s(as.factor(sel_comp$DISTCODE), bs = "re") + Epiyear*as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_04) + s(psfc) +  s(sd_lag_04) , family = gaussian, data = sel_comp)
+summary(norm_gamm)#R-sq.(adj) =   0.98   Deviance explained =   98% 
+deviance(norm_gamm)#106.4527
+```
+
+###Results
+
+####The final, optimal model (a Gaussian generalized additive model with integrated smoothness estimation) is:
+
+log10cpt.u5 ~ s(Epiweek) + s(as.factor(sel_comp$DISTCODE), bs = "re") + Epiyear*as.factor(Region) + s(rainTot_lag_04) + s(tavg_lag_04) + s(psfc) +  s(sd_lag_04)
+
+All fixed and random, parametric and nonparametric factors in the final model contribute signficantly to reducing model variability.
+
+Considering district as a random effect explained a substantial amount of the remaining variability in the data; residual deviance decreased from 3301.354 to 106.4527 (98% of total deviance explained).
+
+For both temperature and total rainfall, considering linear correlation between weekly lags and log-10 cases per thousand under 5, autocorrelation between covariates and corresponding lags, and the residual deviances from the random effects generalized additive modeling results: 4-week lags are most highly-associated with and explanatory for malaria incidence. A 4-week lag was also most appropriate for average weekly humidity, selected as saturation vapor pressure defecit. No lag was deemed optimal for mean surface barometric pressure. The high performance of the model serves to assert these choices for the vaiable lags.
+
+The inclusion of Epiweek as a nonparametric smoothing spline term appears to be effective in modeling weekly malaria incidence (p < 0.01).
+
+Malaria incidence does appear to be increasing linearly with year (p < 0.01). Thus, as this increase differs signficantly between (at least) the center and coastal (p = 0.000425), as well as the center and southern regions (p = 0.000180), the degree of annual increase in malaria incidence depends on region.
+
+###Visualizing model fit by Epiweek
+```{r, echo=F, message=F, warning=F}
+#Plotting Fitted values by 
+#install.packages("mgcViz")
+library(mgcViz)
+norm_gamm <- getViz(norm_gamm)
+```
+
+```{r, echo=T, message=F, warning=F}
+#Plotting Epiweek by model-fitted values
+o <- plot( sm(norm_gamm, 1) )
+o + l_fitLine(colour = "red") + l_rug(mapping = aes(x=x, y=y), alpha = 0.95) +
+    l_ciLine(mul = 5, colour = "blue", linetype = 2) + 
+    l_points(shape = 19, size = 1, alpha = 0.1) + theme_classic()
+
+```
+
+####95% confidence intervals (in blue) futher indicate a tight-fitting prediction for the final model.
+
+###Conclusion
+
+####Results indicate that weather factors in Mozambique are accurately modeled with nonparametric smoothing splines, and that spatial and temporal variation in weather are excellent explanatory factors for weekly average malaria incidence in children aged 5 and under. It should be noted that, for proper estimates of cases per thousand (under 5), final model estimates should be exponentiated by a factor of 10 to reverse the base-10 log transformation of of the outcome. Additionally, upon graphical inspection, an interaction does not appear to be present between Epiweek and region; however, this interaction was not tested statistically. Ideally, future studies will further investigate this relationship with more objective, quantitative methods.
+
+###References
+
+####1. https://www.cdc.gov/malaria/malaria_worldwide/impact.html
+####2. https://www.malariafreefuture.org/malaria
+####3. https://www.cdc.gov/malaria/about/distribution.html
+####4. https://wwwnc.cdc.gov/travel/yellowbook/2018/infectious-diseases-related-to-travel/yellow-fever-malaria-information-by-country/mozambique#seldyfm879
+####5. https://cran.r-project.org/web/packages/gam/gam.pdf
+####6. https://stat.ethz.ch/R-manual/R-devel/library/mgcv/
+####7. https://stat.ethz.ch/R-manual/R-devel/library/mgcv/html/random.effects.html3
+
+####The GitHub repository for this project is located at: https://github.com/patrick-iben/bios6640
